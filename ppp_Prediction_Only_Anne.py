@@ -20,7 +20,6 @@ import re
 import argparse
 import pandas as pd
 import numpy as np
-import D3GB ## Create a genome browser from fasta and gff file
 from statistics import median_high
 from tensorflow.keras.models import load_model
 from scipy.cluster.hierarchy import ward, fcluster
@@ -136,25 +135,62 @@ def write_log(S):
 	f.write(S + '\n')
 	f.close()	
 
+def adjust_TSS():
+	# Anne; adjusted_TSS added: Due to clustering the TSS shifts a few bases. here a correction is made on the basis of -10 position: TGxTATAAT
+	# Expected TSS position = len(seq)-16
+	# derived from test module BestTATAAT.py
+	for index, row in promoter_db_centre.iterrows():
+		seq= row['sequence']
+		maxscore = 0
+		bestpos = 0
+		startpos = len(seq)-22  # TSS - 22; Search for -10 from this position to the end of the string
+		for i in range(startpos, len(seq)-9):  # screen area for TGxTATAAT from len sequence -22 to end
+			score=0 ;
+			TGNTATAAT = seq[i:(i+9)]
+			score -= (2 * TGNTATAAT.count('C'))
+			score -= (2 * TGNTATAAT.count('G'))
+			if (TGNTATAAT[0:2]=='TG'): score += 4
+			if (TGNTATAAT[3:9]=='TATAAT'): score += 10
+			for j in range(3, 8):
+				duo=TGNTATAAT[j:(j+2)]
+				if   (duo=='AA'): score += 3
+				elif (duo=='TA'): score += 3
+				elif (duo=='AT'): score += 3
+				elif (duo=='TT'): score += 2
+			if (score>maxscore):
+				maxscore = score
+				bestpos = i
+		#print(seq+ ' ' +seq[bestpos:(bestpos+9)]+' pos='+str(bestpos)+' score='+str(maxscore)+' strand='+row.strand)
+		promoter_db_centre.loc[index, 'min10seq'] = seq[bestpos:(bestpos+9)]
+		promoter_db_centre.loc[index, 'min10score'] = str(maxscore) ;
 
+		# shift the TSS and sequence of the promoter
+		TSSshift = 0
+		if (bestpos > startpos):  TSSshift = int(16 - (len(seq) - bestpos))  # TGxTATAAT is TSS-16
+		if (promoter_db_centre.loc[index, 'strand'] == '+'): 
+			adjTSS = row.TSS + TSSshift ;
+			PromSeq = DNA_sense[(adjTSS - args.PromLen):adjTSS]; 
+		else:  
+			adjTSS = row.TSS - TSSshift ;  
+			PromSeq = reverse_complement(DNA_sense[adjTSS:(adjTSS + args.PromLen)]); 
+		promoter_db_centre.loc[index, 'adjTSS'] = adjTSS ;
+		promoter_db_centre.loc[index, 'sequence'] = PromSeq ;
+		print(PromSeq+ ' ' +seq[bestpos:(bestpos+9)]+' pos='+str(bestpos)+' score='+str(maxscore)+' strand='+row.strand)
 
-
-
-
-write_log('DNA file ='+args.query+'.fna')
-write_log('GFF file ='+args.query+'.gff')
-write_log('model file ='+args.modelName)
-write_log('outfile = correct_predictions.txt')
-write_log('================================================================')
 
 	
+write_log(' ')
+
 
 ''' ==============================  LOAD MODEL ========================================================== '''
-write_log('Loading model and formatting DNA for prediction...')
+write_log(' ==>  LOAD MODEL ') 
+write_log('model file ='+args.modelName)
 model = load_model(args.modelName)
+write_log(' ')
 
 
-''' ==============================  LOAD DNA SEQUENCE ========================================================== '''
+''' ==============================  ENCODE DNA SEQUENCE ========================================================== '''
+write_log(' ==> ENCODE DNA SEQUENCE    ')
 
 DNA_sense = getCleanSeq(args.query+'.fna')
 DNA_antisense = reverse_complement(DNA_sense)
@@ -181,24 +217,24 @@ sense_features     = np.stack(input_sense_features)
 antisense_features = np.stack(input_antisense_features)
 
 write_log('Sense and anti-sense-feature ready for prediction')
-
+write_log(' ')
 
 
 ''' ==============================  MAKING PREDICTIONS ====================================================== '''
-write_log(' ==============================  MAKING PREDICTIONS ====================================================== ')
+write_log(' ==> MAKING PREDICTIONS  ')
 
-write_log('Create pandas DataFrame as container for promoter data')
+#Create pandas DataFrame as container for promoter data
 promoter_db = pd.DataFrame(columns=['position','score','strand','sequence'])
 promoter_db.set_index('position')
 
-
-# sense strand
+# ===> sense strand <===
 write_log('Prediction on sense strand')
 predicted_sense_labels = model.predict(sense_features)  # make a numpy.ndarray; original label and predicted label
 
 # save the first 1000 for evaluation
 #np.savetxt(args.sessiondir+'/'+"predicted_sense_labels.csv", predicted_sense_labels[0:1000], delimiter="\t")
-write_log('\tGet promoters from sense strand with prediction pvalue > '+ str(args.pvalue))
+
+# Get promoters from sense strand with prediction pvalue > str(args.pvalue)
 predicted_sense_promoter_list = []
 probabilityValueSense = []
 for i in range(0,len(predicted_sense_labels)):
@@ -206,14 +242,13 @@ for i in range(0,len(predicted_sense_labels)):
 		probabilityValueSense.append(str(predicted_sense_labels[i][1]))
 		predicted_sense_promoter_list.append(test_sense_sequences[i])  # Get the DNA sequence
 		promoter_db = promoter_db.append({'position':  i,'score':predicted_sense_labels[i][1], 'strand' :'+', 'sequence': test_sense_sequences[i]}, ignore_index=True )
-write_log('\tNumber of promoters sense strand      : ' + str(len(predicted_sense_promoter_list)))
+write_log('\tNumber of putative promoters sense strand      : ' + str(len(predicted_sense_promoter_list)))
 
-
-# anti-sense strand
+# ===> anti-sense strand <===
 write_log('Prediction on anti-sense strand')
 predicted_antisense_labels = model.predict(antisense_features)  # make a numpy.ndarray; original label and predicted label
 
-write_log('\tGet promoters from anti-sense strand with prediction pvalue > '+ str(args.pvalue))
+# Get promoters from anti-sense strand with prediction pvalue > str(args.pvalue)
 predicted_antisense_promoter_list = []
 probabilityValueAntisense = []
 for i in range(0,len(predicted_antisense_labels)):
@@ -221,12 +256,11 @@ for i in range(0,len(predicted_antisense_labels)):
 		probabilityValueAntisense.append(str(predicted_antisense_labels[i][1]))
 		predicted_antisense_promoter_list.append(test_antisense_sequences[i])   # Get the DNA sequence
 		promoter_db = promoter_db.append({'position': len(DNA_sense) - i,'score':predicted_antisense_labels[i][1], 'strand' :'-', 'sequence': test_antisense_sequences[i]}, ignore_index=True )
-write_log('\tNumber of promoters anti-sense strand : ' + str(len(predicted_antisense_promoter_list)))
-
-write_log('Total number of predicted promoters: ' + str(len(promoter_db)))
-write_log('================================================================')
+write_log('\tNumber of putative promoters anti-sense strand : ' + str(len(predicted_antisense_promoter_list)))
 
 
+''' ==============================  REPORT PROMOTERS PREDICTION ========================================= '''
+write_log('Total number of putative predicted promoters: ' + str(len(promoter_db)))
 
 if len(promoter_db) == 0:
 	write_log('No promoters found')
@@ -241,28 +275,35 @@ if len(promoter_db) >50000:
 	pd.DataFrame(columns=["Error; Too many promoters found"]).to_csv(args.sessiondir+'/'+args.outPrefix+'.Promoters.txt')
 	os._exit(1)	
 
+write_log(' ')
 
 
+''' ===============================  PERFORM HIERARCHICAL CLUSTERING ========================================= '''
+write_log(' ==> PERFORM HIERARCHICAL CLUSTERING  ')
 
-''' ==============================  PERFORM HIERARCHICAL CLUSTERING ========================================= '''
-
-
-write_log(' ==============================  PERFORM HIERARCHICAL CLUSTERING ========================================= ')
 # Clustering written by Daniel Kaptijn, modified by Anne
 # For debugging: Optional reload prediction results DataFrame promoter_db
 # For debugging: promoter_db_header=['position','score','strand','sequence']
 # For debugging: promoter_db = pd.read_csv(args.sessiondir+'/'+args.outPrefix+'.Promoters.initial.txt',  sep ='\t' ,header=0,  names=promoter_db_header)
 
 
-if len(predicted_sense_promoter_list) > 4:
+if len(predicted_sense_promoter_list)+len(predicted_antisense_promoter_list) == 0:
+	with open(args.sessiondir+'/'+args.outPrefix+'.Promoters.txt', "w") as f:
+		f.write("No promoters found")
+	sys.exit()	
+	
+promoter_db['centre']	= np.NaN
+
+
+if len(predicted_sense_promoter_list) > 1:
 	write_log('Cluster Sense Strand')
 	Xs = promoter_db[['position','strand']].copy()	
 	Xs = Xs[Xs['strand']=='+']
 	Xs = Xs.drop('strand', 1)
-	Xs['2D'] = 0 
-	Zs = ward(pdist(Xs))
+	Xs['2D'] = 0
+	#T=pdist(Xs)
+	#Zs = ward(T)
 	sense_pred = fclusterdata(Xs, t=WINDOW_SIZE, criterion='distance')
-
 	sense_dict = {}
 	for i in range(0, len(sense_pred)):
 		key = int(sense_pred[i])       # cluster ID
@@ -278,19 +319,20 @@ if len(predicted_sense_promoter_list) > 4:
 		if len(sense_dict[i]) >= MIN_CLUSTER_SIZE:
 			cluster_centre = median_high(sense_dict[i])
 			promoter_db.loc[(promoter_db['position'] == cluster_centre) & (promoter_db['strand'] == '+'), 'centre'] = cluster_centre
+		else:
+			promoter_db.loc[(promoter_db['position'] == sense_dict[i]) & (promoter_db['strand'] == '+'), 'centre'] = sense_dict[i]
 
 
-if len(predicted_antisense_promoter_list) > 4:
+
+if len(predicted_antisense_promoter_list) > 1:
 	write_log('Cluster Anti-Sense Strand')
 	Xs = promoter_db[['position','strand']].copy()
 	Xs = Xs[Xs['strand']=='-']
 	Xs = Xs.drop('strand', 1)
 	Xs = Xs.iloc[::-1].reset_index(drop=True)		# reverse order and reindex for anti-sense strand
 	Xs['2D'] = 0
-	Zs = ward(pdist(Xs))
+	#Zs = ward(pdist(Xs))
 	antisense_pred = fclusterdata(Xs, t=WINDOW_SIZE, criterion='distance')
-
-
 	antisense_dict = {}
 	for i in range(0, len(antisense_pred)):
 		key = int(antisense_pred[i])
@@ -306,6 +348,9 @@ if len(predicted_antisense_promoter_list) > 4:
 		if len(antisense_dict[i]) >= MIN_CLUSTER_SIZE:
 			cluster_centre = median_high(antisense_dict[i])
 			promoter_db.loc[(promoter_db['position'] == cluster_centre) & (promoter_db['strand'] == '-'), 'centre'] = cluster_centre
+		else:
+			promoter_db.loc[(promoter_db['position'] == antisense_dict[i]) & (promoter_db['strand'] == '-'), 'centre'] = antisense_dict[i]
+		
 
 
 
@@ -314,41 +359,60 @@ write_log('Initial number of predictions:           ' +str(len(promoter_db)))
 write_log('Number of predictions after clustering:  ' +str(promoter_db.centre.count()))
 write_log('Saving clustered data: '+ args.outPrefix+'.Promoter.db.clustered.txt')
 
-#promoter_db.to_csv(args.sessiondir+'/'+args.outPrefix+'.Promoter.db.clustered.txt', index = False, sep ='\t')
+promoter_db.to_csv(args.sessiondir+'/'+args.outPrefix+'.Promoter.db.clustered.txt', index = False, sep ='\t')
 
+
+''' ==============================  CENTRE PROMOTERS ========================================= '''
+# make a new DF with centre promoters only
+promoter_db['score'] = promoter_db['score'].apply(lambda x: round(x*10-9, 2))
+promoter_db_centre = promoter_db
+promoter_db_centre.dropna(inplace=True)  # remove all rows with NaN => these are the non-centre promoters
+del promoter_db_centre['centre']
+
+
+
+write_log(' ')
 
 ''' ==============================  ADD TSS POSITION ========================================= '''
+write_log(' ==> ADD TSS POSITION  ')
+
 # Anne, TSS added: The position is the start of the promoter. TSS is position + length of promoter
-write_log('ADD TSS POSITION ')
-promoter_db.loc[promoter_db['strand'] == '+', 'TSS'] = promoter_db['position'] + args.PromLen 
-promoter_db.loc[promoter_db['strand'] == '-', 'TSS'] = promoter_db['position'] - args.PromLen 
+promoter_db_centre.loc[promoter_db_centre['strand'] == '+', 'TSS'] = promoter_db_centre['position'] + args.PromLen 
+promoter_db_centre.loc[promoter_db_centre['strand'] == '-', 'TSS'] = promoter_db_centre['position'] - args.PromLen 
+#promoter_db_centre.sort_values(by="TSS", ascending=True, inplace=True)
+#promoter_db_centre.reset_index(drop=True, inplace=True)
 
 
+''' ==============================  ADD Corrected TSS POSITION ========================================= '''
+
+write_log(' ==> adjust TSS POSITION and -10 score ')
+adjust_TSS()
+
+write_log(' ')
 
 
-''' ==============================  CLASSIFY PROMOTERS =================================================================== '''
+''' ==============================  CLASSIFY PROMOTERS ========================================= '''
+write_log(' ==> CLASSIFY PROMOTERS  ')
+
 # Anne, Classification added: Use the original features annotation (from gff) to map and classify TSS position
-write_log('CLASSIFY PROMOTERS ')
 genes_gff = pd.read_csv(args.query+".gff", header=None,  comment='#',sep='\t', names=gff_header)
 convert_dict = { 'start': int, 'end': int }
 genes_gff = genes_gff.astype(convert_dict)  # be sure that start and end are integers
 
-# Here we only use the genes 
-promoter_db['class'] = 'intergenic'
+# Here we use the start and end of genes from the GFF
+promoter_db_centre['class'] = 'intergenic'
 for index, feature in genes_gff.loc[genes_gff['type'] == 'gene'].iterrows():
-	promoter_db.loc[(promoter_db['TSS'] > feature.start) & (promoter_db['TSS'] < feature.end), 'class'] = 'feature'
+	promoter_db_centre.loc[(promoter_db_centre['TSS'] > feature.start) & (promoter_db_centre['TSS'] < feature.end), 'class'] = 'feature'
 
 
-''' ==============================  EXPORT RESULT ======================================================================= '''
+
+
+
+''' ==============================  EXPORT PROMOTER DATA ========================================= '''
+write_log(' ==> EXPORT PROMOTER DATA  ')
 
 
 # Export the promoters
-promoter_db['score'] = promoter_db['score'].apply(lambda x: round(x*10-9, 2))
-promoter_db_centre = promoter_db.dropna()
-del promoter_db_centre['centre']
-promoter_db_centre.sort_values(by="TSS", ascending=True, inplace=True)
-promoter_db_centre.reset_index(drop=True, inplace=True)
-
 
 FastaKey = getFastaKey(args.query+'.fna')
 
@@ -368,7 +432,9 @@ for index, row in promoter_db_centre.iterrows():
 		df_row['end']   = row['position']
 	df_row['name'] = 'prom_'+format(index, '04d')
 	df_row['score'] = row['score']
-	df_row['description'] = 'ID='+df_row['name']+';TSS='+str(row['TSS'])+';class='+row['class']+';seq='+row['sequence']
+	min10class= 'strong'
+	if (int(row['min10score']) < 5): min10class = 'weak' 
+	df_row['description'] = 'ID='+df_row['name']+';locus_tag='+df_row['name']+';TSS='+str(row['TSS'])+';class='+row['class']+';min10seq='+row['min10seq']+';min10score='+row['min10score']+';min10class='+min10class+';promseq='+row['sequence']
 	promoter_gff = promoter_gff.append(df_row, ignore_index=True)
 promoter_gff.sort_values(by=['start']).to_csv(args.sessiondir+'/'+args.outPrefix+'.Promoters.gff', index = False, sep ='\t', columns=gff_header)
 
@@ -378,7 +444,7 @@ pd.concat(gffs).sort_values(by=['start']).to_csv(args.sessiondir+'/'+args.outPre
 	
 
 # EXPORT promoters as TABLE	
-table_header= ["chrom","ID","TSS","strand","score","class","sequence","start","end"]
+table_header= ["chrom","ID","TSS","adjTSS","min10seq","min10score","strand","score","class","sequence","start","end"]
 promoter_table = pd.DataFrame(columns=table_header)
 df_row = pd.Series()
 for index, row in promoter_db_centre.iterrows():
@@ -392,22 +458,13 @@ for index, row in promoter_db_centre.iterrows():
 		df_row['end']   = row['position']
 	df_row['ID'] = 'prom_'+format(index, '04d')
 	df_row['TSS'] = row['TSS']
+	df_row['adjTSS'] = row['adjTSS']
+	df_row['min10seq'] = row['min10seq']
+	df_row['min10score'] = row['min10score']
 	df_row['score'] = row['score']
 	df_row['sequence'] = row['sequence']
 	df_row['class'] = row['class']
 	promoter_table = promoter_table.append(df_row, ignore_index=True)
 promoter_table.sort_values(by=['TSS']).to_csv(args.sessiondir+'/'+args.outPrefix+'.Promoters.txt', index = False, sep ='\t', columns=table_header)
-
-
-
-''' ==============================  Make graphics ======================================================================= '''
-
-print('D3GB folder = '+args.sessiondir+'/D3GB')
-print('D3GB fasta  = '+args.query+'.fna')
-print('D3GB gff    = '+args.sessiondir+'/'+args.outPrefix+'.Genes_Promoters.gff')
-gb = D3GB.genomebrowser((args.query+'.fna',),directory = args.sessiondir+'/D3GB')
-gb.addSequence(args.query+'.fna')
-gb.addGFF(args.sessiondir+'/'+args.outPrefix+'.Genes_Promoters.gff')
-
 
 

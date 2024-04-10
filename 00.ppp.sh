@@ -2,14 +2,20 @@
 
 # Main script for promoter prediction in prokaryotes
 #
-# Anne de Jong, June 2021 
+# Anne de Jong, June 2022, first release 
+#               December 2022, Palindrome prediction added; inherted from FACoP
 #
 
 PROGRAMDIR=/data/ppp
+PromoterPredict=$PROGRAMDIR/ppp_Prediction_Only_Anne.py
+PromoterPredictMultiFasta=$PROGRAMDIR/ppp_Prediction_MultiFasta.py
+GFF_filter=$PROGRAMDIR/GFF_filter.py
+FACoP_PalindromePredict=/data/gsea_pro/FACoP/FACoP_PalindromePredict.py
 
 SESSIONDIR=$1
-#SESSIONDIR='/data/ppp/misc'
 ModelSelected=$2
+PalindromePrediction=$3
+GenePrediction=$4
 
 # check code injection
 COUNT1=`grep -rnw $SESSIONDIR -e '\?php' | wc -l `
@@ -25,8 +31,7 @@ fi
  
 
 # Get filenames
-DNAFILES=`find $SESSIONDIR -type f \( -iname \*.fna -o -iname \*.fasta \)`
-GFFFILES=`find $SESSIONDIR -type f \( -iname \*.gff -o -iname \*.gff3  \)`
+DNAFILES=`find $SESSIONDIR -type f \( -iname \*.fna -o -iname \*.fasta -o -iname \*.fa  \)`   # Use the -o flag between different parameters.
 COUNTDNA=`echo $DNAFILES | wc -w`
 
 # Check if DNA files are found
@@ -51,11 +56,19 @@ done;
 mkdir $SESSIONDIR/query_combined_files
 cat $DNAFILES > $SESSIONDIR/query_combined_files/query.fna
 
+# Use Prodigal to make a GFF file
+if [ "$GenePrediction" = "TRUE" ]; then
+	# Call Prodigal
+	prodigal -p meta -f gff -i $SESSIONDIR/query_combined_files/query.fna | sed 's/ID=/locus_tag=prodigal_/'  | sed 's/CDS\s/gene	/' | sed 's/\"/#/g' > $SESSIONDIR/prodigal.gff
+fi
+
 # Combine all GFFFILES
+GFFFILES=`find $SESSIONDIR -type f \( -iname \*.gff -o -iname \*.gff3  \)`
 cat $GFFFILES > $SESSIONDIR/query_combined_files/query.gff
 
+
 # For the D3GB viewer only use the type=gene lines to prevent errors in D3GB
-python3 $PROGRAMDIR/GFF_filter.py -gff $SESSIONDIR/query_combined_files/query.gff
+#python3 $GFF_filter -gff $SESSIONDIR/query_combined_files/query.gff
 
 # Select model on the basis of GC content
 case $ModelSelected in
@@ -176,14 +189,22 @@ case $ModelSelected in
 	Streptomyces) ModelDir="Streptomyces";;
 esac	
 
+echo 'ModelSelected='$ModelSelected > $SESSIONDIR/ppp.models
+echo 'ModelDir='$ModelDir          >> $SESSIONDIR/ppp.models
 
 modelName=/data/ppp/models/$ModelDir/cnn_lstm.h5
 
-# Call python script
-python3 $PROGRAMDIR/ppp_Prediction_Only_Anne.py -sessiondir $SESSIONDIR -query $SESSIONDIR/query_combined_files/query -modelName $modelName -promlen 71 -pval 0.99 -out ppp
+# Call Promoter prediction script
+python3 $PromoterPredict -sessiondir $SESSIONDIR -query $SESSIONDIR/query_combined_files/query -modelName $modelName -promlen 71 -pval 0.99 -out ppp
+#python3 $PromoterPredictMultiFasta -sessiondir $SESSIONDIR -fasta $SESSIONDIR/query_combined_files/query.fna -gff $SESSIONDIR/query_combined_files/query.gff -modelName $modelName -promlen 71 -pval 0.99 -out ppp
 
+if [ "$PalindromePrediction" = "TRUE" ]; then
+	# Call Palindrome prediction script
+	python3 $FACoP_PalindromePredict -s $SESSIONDIR -i query_combined_files/query.fna -o FACoP.Palindromes 
+	cat $SESSIONDIR/FACoP.Palindromes.gff >> $SESSIONDIR/ppp.Genes_Promoters.gff
+fi
 
 
 # tell webserver when run is finished
-echo 'DONE' > sessionend
+echo 'DONE' > $SESSIONDIR/sessionend
 
